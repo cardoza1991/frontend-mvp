@@ -7,6 +7,20 @@ import { createBlock } from './utils/blockFactory';
 import CustomNode from './components/CustomNode';
 import './App.css';
 
+// Import STIX and AI services
+import { 
+  fetchStixData, 
+  getThreatActors, 
+  getAllTechniques, 
+  getTechniquesForActor,
+  filterTechniquesByPlatform
+} from './services/stixService';
+
+import { 
+  generateAttackPlan, 
+  generateCommands 
+} from './services/aiService';
+
 // Define nodeTypes outside the component
 const nodeTypes = {
   customNode: CustomNode,
@@ -19,9 +33,10 @@ function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedBlock, setSelectedBlock] = useState(null);
   const [isExecuting, setIsExecuting] = useState(false);
-  const [executionState, setExecutionState] = useState({
+  const [executionProgress, setExecutionProgress] = useState({
     activeNodeId: null,
-    results: {},
+    completedNodes: 0,
+    totalNodes: 0
   });
 
   const onConnect = (params) => {
@@ -45,104 +60,203 @@ function App() {
     setNodes((nds) => [...nds, newBlock]);
   };
 
+  // Helper function to find input data from connected nodes
+  const findInputData = (nodeId, inputType) => {
+    // Find edges connecting to this node's input
+    const incomingEdges = edges.filter(
+      edge => edge.target === nodeId && edge.targetHandle === inputType
+    );
+    
+    if (incomingEdges.length === 0) return null;
+    
+    // Get the source node of the first incoming edge
+    const sourceNodeId = incomingEdges[0].source;
+    const sourceNode = nodes.find(node => node.id === sourceNodeId);
+    
+    if (!sourceNode || !sourceNode.data.executionResult) return null;
+    
+    // Return the data from the source node's output
+    return sourceNode.data.executionResult[incomingEdges[0].sourceHandle];
+  };
+
   const executeWorkflow = useCallback(() => {
     setIsExecuting(true);
-    setExecutionState({ activeNodeId: null, results: {} });
-
+    
     // Get topologically sorted nodes (based on connections)
     const sortedNodes = topologicalSort(nodes, edges);
-
+    
+    setExecutionProgress({
+      activeNodeId: null,
+      completedNodes: 0,
+      totalNodes: sortedNodes.length
+    });
+    
     // Execute nodes in sequence
     let currentNodeIndex = 0;
-
+    
     const executeNextNode = async () => {
       if (currentNodeIndex >= sortedNodes.length) {
         setIsExecuting(false);
         return;
       }
-
+      
       const currentNode = sortedNodes[currentNodeIndex];
-      setExecutionState(prev => ({ ...prev, activeNodeId: currentNode.id }));
-
+      setExecutionProgress(prev => ({ 
+        ...prev, 
+        activeNodeId: currentNode.id
+      }));
+      
       // Update node to show it's executing
-      setNodes(nds =>
-        nds.map(node =>
-          node.id === currentNode.id
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
-                  isExecuting: true
-                }
-              }
+      setNodes(nds => 
+        nds.map(node => 
+          node.id === currentNode.id 
+            ? { 
+                ...node, 
+                data: { 
+                  ...node.data, 
+                  isExecuting: true 
+                } 
+              } 
             : node
         )
       );
-
+      
       // Simulate node execution
       const result = await simulateNodeExecution(currentNode);
-
-      // Update execution state with results
-      setExecutionState(prev => ({
-        ...prev,
-        results: { ...prev.results, [currentNode.id]: result }
-      }));
-
+      
       // Update node to show execution result
-      setNodes(nds =>
-        nds.map(node =>
-          node.id === currentNode.id
-            ? {
-                ...node,
-                data: {
-                  ...node.data,
+      setNodes(nds => 
+        nds.map(node => 
+          node.id === currentNode.id 
+            ? { 
+                ...node, 
+                data: { 
+                  ...node.data, 
                   isExecuting: false,
                   executionResult: result
-                }
-              }
+                } 
+              } 
             : node
         )
       );
-
+      
+      setExecutionProgress(prev => ({
+        ...prev,
+        completedNodes: prev.completedNodes + 1,
+        activeNodeId: null
+      }));
+      
       currentNodeIndex++;
       setTimeout(executeNextNode, 1000); // Delay for visual effect
     };
-
+    
     executeNextNode();
   }, [nodes, edges, setNodes]);
 
-  // Helper function to simulate node execution (for demonstration)
+  // Execute a node with real functionality
   const simulateNodeExecution = async (node) => {
-    return new Promise(resolve => {
-      // Simulate processing time
-      setTimeout(() => {
+    return new Promise(async (resolve) => {
+      try {
         let result;
-
+        
         switch (node.data.blockType) {
           case 'stixLoader':
-            result = { stixData: { techniques: [{ id: 'T1078', name: 'Valid Accounts' }] } };
+            // Actually fetch the STIX data
+            const stixType = node.data.configuration?.source || 'enterprise';
+            const stixData = await fetchStixData(stixType);
+            const actors = getThreatActors(stixData);
+            const allTechniques = getAllTechniques(stixData);
+            
+            result = { 
+              stixData: { 
+                raw: stixData,
+                actors,
+                techniques: allTechniques
+              } 
+            };
             break;
+            
           case 'threatActor':
-            result = { techniques: [{ id: 'T1078', name: 'Valid Accounts' }] };
+            // Get the actor ID from configuration
+            const actorId = node.data.configuration?.actor || '';
+            // Get the input data from previous nodes
+            const threatStixData = findInputData(node.id, 'stixData')?.raw;
+            
+            if (threatStixData && actorId) {
+              const actorTechniques = getTechniquesForActor(threatStixData, actorId);
+              result = { techniques: actorTechniques };
+            } else {
+              result = { techniques: [{ id: 'T1078', name: 'Valid Accounts' }] };
+            }
             break;
+            
           case 'techniqueFilter':
-            result = { filteredTechniques: [{ id: 'T1078', name: 'Valid Accounts' }] };
+            // Get techniques from input
+            const techniques = findInputData(node.id, 'techniques') || [];
+            
+            const platform = node.data.configuration?.platform || 'windows';
+            const filterByPlatform = node.data.configuration?.filterByPlatform || false;
+            
+            let filteredTechniques = techniques;
+            if (filterByPlatform) {
+              filteredTechniques = filterTechniquesByPlatform(techniques, platform);
+            }
+            
+            result = { filteredTechniques: filteredTechniques };
             break;
+            
           case 'aiGenerator':
-            result = { plan: "1. Use stolen credentials to access the system\n2. Escalate privileges" };
+            // Get filtered techniques from input
+            const aiTechniques = findInputData(node.id, 'filteredTechniques') || [];
+            
+            // Use actual AI generation
+            const aiOptions = {
+              model: node.data.configuration?.model || 'ollama/llama3',
+              temperature: node.data.configuration?.temperature || 0.7,
+              impact: node.data.configuration?.impact || 'data exfiltration'
+            };
+            
+            const aiResult = await generateAttackPlan(aiTechniques, aiOptions);
+            result = { plan: aiResult.plan };
             break;
+            
           case 'commandBuilder':
-            result = { commands: ["net use \\\\target\\C$ /user:domain\\username password", "powershell -exec bypass"] };
+            // Get the plan from the AI generator
+            const plan = findInputData(node.id, 'plan') || '';
+            
+            // Generate actual commands
+            const cmdPlatform = node.data.configuration?.platform || 'windows';
+            const commandResult = await generateCommands(plan, { platform: cmdPlatform });
+            
+            result = { commands: commandResult.commands };
             break;
+            
           case 'reportGenerator':
-            result = { report: "# Attack Simulation Report\n\nThis report outlines..." };
+            // Get plan and commands from inputs
+            const reportPlan = findInputData(node.id, 'plan') || '';
+            const commands = findInputData(node.id, 'commands') || [];
+            
+            const reportContent = `# Attack Simulation Report
+
+## Plan
+${reportPlan}
+
+## Commands
+${Array.isArray(commands) ? commands.map(cmd => `\`\`\`bash\n${cmd}\n\`\`\``).join('\n\n') : '```bash\nNo commands available\n```'}
+`;
+            
+            result = { report: reportContent };
             break;
+            
           default:
             result = {};
         }
-
+        
         resolve(result);
-      }, 1500);
+      } catch (error) {
+        console.error(`Error executing node ${node.id}:`, error);
+        resolve({ error: error.message });
+      }
     });
   };
 
@@ -151,7 +265,7 @@ function App() {
     // Simple implementation that uses a breadth-first traversal
     // Find nodes with no incoming edges (root nodes)
     const nodeMap = new Map(nodes.map(node => [node.id, { ...node, incomingEdges: 0, outgoingNodes: [] }]));
-
+    
     // Count incoming edges and build adjacency list
     edges.forEach(edge => {
       if (nodeMap.has(edge.target)) {
@@ -161,16 +275,16 @@ function App() {
         nodeMap.get(edge.source).outgoingNodes.push(edge.target);
       }
     });
-
+    
     // Find nodes with no dependencies (no incoming edges)
     const queue = Array.from(nodeMap.values()).filter(node => node.incomingEdges === 0);
     const sortedNodes = [];
-
+    
     // Process nodes in order
     while (queue.length > 0) {
       const current = queue.shift();
       sortedNodes.push(current);
-
+      
       // Decrease incoming count for all dependent nodes
       current.outgoingNodes.forEach(targetId => {
         const targetNode = nodeMap.get(targetId);
@@ -182,13 +296,13 @@ function App() {
         }
       });
     }
-
+    
     // If we have unprocessed nodes, fall back to original order
     // (happens if there are cycles in the graph)
     if (sortedNodes.length < nodes.length) {
       return nodes;
     }
-
+    
     return sortedNodes;
   };
 
@@ -197,10 +311,10 @@ function App() {
       nodes,
       edges
     };
-
+    
     const workflowJson = JSON.stringify(workflow);
     localStorage.setItem('savedWorkflow', workflowJson);
-
+    
     // Create a download link
     const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(workflowJson);
     const downloadAnchorNode = document.createElement('a');
@@ -214,7 +328,7 @@ function App() {
   const loadWorkflow = (event) => {
     const file = event.target.files[0];
     if (!file) return;
-
+    
     const reader = new FileReader();
     reader.onload = (e) => {
       try {
@@ -230,15 +344,15 @@ function App() {
 
   // Clear execution results from all nodes
   const resetExecution = () => {
-    setExecutionState({ activeNodeId: null, results: {} });
-    setNodes(nds =>
-      nds.map(node => ({
-        ...node,
-        data: {
-          ...node.data,
-          isExecuting: false,
-          executionResult: undefined
-        }
+    setExecutionProgress({ activeNodeId: null, completedNodes: 0, totalNodes: 0 });
+    setNodes(nds => 
+      nds.map(node => ({ 
+        ...node, 
+        data: { 
+          ...node.data, 
+          isExecuting: false, 
+          executionResult: undefined 
+        } 
       }))
     );
   };
@@ -247,32 +361,32 @@ function App() {
     <div className="app">
       <div className="sidebar">
         <BlockLibrary onDragBlock={addNewBlock} />
-
+        
         <div className="sidebar-controls">
           <h3>Workflow Controls</h3>
-          <button
+          <button 
             onClick={executeWorkflow}
             disabled={isExecuting}
             className="control-button"
           >
             {isExecuting ? 'Executing...' : 'Run Workflow'}
           </button>
-
-          <button
+          
+          <button 
             onClick={resetExecution}
             className="control-button reset-button"
             disabled={isExecuting}
           >
             Reset Execution
           </button>
-
-          <button
+          
+          <button 
             onClick={saveWorkflow}
             className="control-button save-button"
           >
             Save Workflow
           </button>
-
+          
           <div className="file-input-container">
             <input
               type="file"
@@ -285,9 +399,18 @@ function App() {
               Load Workflow
             </label>
           </div>
+          
+          {/* Add execution progress display */}
+          {isExecuting && (
+            <div className="execution-status">
+              <h4>Execution Progress</h4>
+              <p>Active: {executionProgress.activeNodeId ? `Node ${executionProgress.activeNodeId.split('-')[1]}` : 'None'}</p>
+              <p>Progress: {executionProgress.completedNodes} / {executionProgress.totalNodes}</p>
+            </div>
+          )}
         </div>
       </div>
-
+      
       <div className="flow-container">
         <ReactFlow
           nodes={nodes}
@@ -304,7 +427,7 @@ function App() {
           <MiniMap />
         </ReactFlow>
       </div>
-
+      
       {selectedBlock && (
         <PropertiesPanel
           block={selectedBlock}
