@@ -1,38 +1,75 @@
-.App {
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  background: #f0f0f0;
+}
+
+.sidebar-controls {
+  padding: 10px;
+  border-top: 1px solid #ccc;
+}
+
+.flow-container {
+  flex-grow: 1;
+  height: 100%;
+  width: 100%;
+  min-height: 600px;
+  min-width: 800px;
+}
+
+.control-button {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  margin: 8px 0;
+  background: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
   text-align: center;
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
+.reset-button {
+  background: #f0ad4e;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
-  }
+.save-button {
+  background: #5bc0de;
 }
 
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
+.load-button {
+  background: #337ab7;
 }
 
-.App-link {
-  color: #61dafb;
+.control-button:hover {
+  filter: brightness(90%);
 }
 
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+.control-button:disabled {
+  background: #cccccc;
+  cursor: not-allowed;
+}
+
+.file-input-container {
+  margin: 8px 0;
+}
+
+/* Style for active nodes during execution */
+.executing {
+  box-shadow: 0 0 10px #4CAF50;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7); }
+  70% { box-shadow: 0 0 0 10px rgba(76, 175, 80, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(76, 175, 80, 0); }
 }
